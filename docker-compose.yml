@@ -1,0 +1,72 @@
+services:
+  mariadb:
+    image: mariadb:10.11
+    container_name: dj-mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql-root-pw
+      MYSQL_DATABASE: domjudge
+      MYSQL_USER: domjudge
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql-user-pw
+    command: ["--max-connections=1000"]
+    ports:
+      - "13306:3306"
+    volumes:
+      - dbdata:/var/lib/mysql
+    secrets:
+      - mysql-user-pw
+      - mysql-root-pw
+    restart: unless-stopped
+
+  domserver:
+    image: domjudge/domserver:8.2.3
+    container_name: domserver
+    depends_on:
+      - mariadb
+    environment:
+      CONTAINER_TIMEZONE: Asia/Tokyo
+      MYSQL_HOST: mariadb
+      MYSQL_DATABASE: domjudge
+      MYSQL_USER: domjudge
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql-user-pw
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql-root-pw
+      FPM_MAX_CHILDREN: "40"
+      WEBAPP_BASEURL: "/"
+      DOMJUDGE_ALLOW_PASTE_SUBMISSION: "1"
+    ports:
+      - "12345:80"
+    secrets:
+      - mysql-user-pw
+      - mysql-root-pw
+    restart: unless-stopped
+
+  judgehost-0:
+    image: domjudge/judgehost:8.2.3
+    container_name: judgehost-0
+    depends_on:
+      - domserver
+    privileged: true
+    hostname: judgedaemon-0
+    environment:
+      CONTAINER_TIMEZONE: Asia/Tokyo
+      DOMSERVER_BASEURL: http://domserver/   # /api は自動付与
+      JUDGEDAEMON_USERNAME: judgehost
+      JUDGEDAEMON_PASSWORD_FILE: /run/secrets/judgehost-pw
+      DAEMON_ID: "0"
+      DOMJUDGE_CREATE_WRITABLE_TEMP_DIR: "1"  # 6.1+ で有効
+    cgroup: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    secrets:
+      - judgehost-pw
+    restart: unless-stopped
+
+secrets:
+  mysql-user-pw:
+    file: ./secrets/mysql-user-pw.txt
+  mysql-root-pw:
+    file: ./secrets/mysql-root-pw.txt
+  judgehost-pw:
+    file: ./secrets/judgehost-pw.txt
+
+volumes:
+  dbdata:

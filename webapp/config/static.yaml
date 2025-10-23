@@ -1,0 +1,14 @@
+# Generated from 'static.yaml.in' on Wed Oct 23 08:07:57 UTC 2024.
+
+parameters:
+    domjudge.version: 8.2.3
+    domjudge.bindir: /opt/domjudge/domserver/bin
+    domjudge.etcdir: /opt/domjudge/domserver/etc
+    domjudge.webappdir: /opt/domjudge/domserver/webapp
+    domjudge.libdir: /opt/domjudge/domserver/lib
+    domjudge.sqldir: /opt/domjudge/domserver/sql
+    domjudge.libvendordir: /opt/domjudge/domserver/lib/vendor
+    domjudge.logdir: /opt/domjudge/domserver/log
+    domjudge.rundir: /opt/domjudge/domserver/run
+    domjudge.tmpdir: /opt/domjudge/domserver/tmp
+    domjudge.baseurl: http://localhost//

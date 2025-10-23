@@ -1,0 +1,11 @@
+# docker-compose.override.yml
+services:
+  domserver:
+    volumes:
+      # ローカルの webapp を丸ごと差し替え
+      - ./webapp:/opt/domjudge/domserver/webapp:rw
+      # Symfony の cache/log（var）はコンテナ側のボリュームに退避
+      - domserver-webapp-var:/opt/domjudge/domserver/webapp/var
+
+volumes:
+  domserver-webapp-var:
