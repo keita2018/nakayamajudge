@@ -1,3 +1,2 @@
 # domjudge-test
 # nakayamajudge
-# nakayamajudge
