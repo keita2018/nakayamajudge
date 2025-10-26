@@ -39,6 +39,233 @@
         {% endif %}
     </div>
 
+    {# ===== 1チーム=1行 ＋ (team, problem) 代表提出（正解優先／全不正解なら最大通過） ===== #}
+
+    {% set groups = {} %}
+
+    {% for submission in submissions %}
+    {% set teamName  = submission.team.effectiveName %}
+    {% set teamKey   = teamName ~ '' %}  {# 文字列キー固定 #}
+
+    {# 問題キーは shortname を使って厳密に1つへ集約 #}
+    {% set probKey   = submission.contestProblem.shortname ~ '' %}
+    {% set probLabel = submission.contestProblem.shortname ~ ' - ' ~ submission.problem.name %}
+
+    {# 判定→正解/不正解 #}
+    {% set result_text = (submission | printValidJurySubmissionResult(false))|lower %}
+    {% set isCorrect   = (result_text == 'correct') %}
+    {% set seikai      = isCorrect ? '正解' : '不正解' %}
+
+    {# 通過数/総数 #}
+    {% set j = submission.judgings.first is defined ? submission.judgings.first : null %}
+    {% set runs = [] %}
+    {% if j %}
+        {% if attribute(j, 'judgingRuns') is defined and j.judgingRuns is not empty %}
+            {% set runs = j.judgingRuns %}
+        {% elseif attribute(j, 'runs') is defined and j.runs is not empty %}
+            {% set runs = j.runs %}
+        {% endif %}
+    {% endif %}
+
+    {% set passed = 0 %}
+    {% set total  = 0 %}
+    {% for r in runs %}
+        {% set rr = (attribute(r, 'runresult') is defined and r.runresult is not empty) ? r.runresult|lower : '' %}
+        {% set total = total + 1 %}
+        {% if rr == 'correct' or rr == 'accepted' %}
+            {% set passed = passed + 1 %}
+        {% endif %}
+    {% endfor %}
+
+    {# 既存の items（辞書）を取得 #}
+    {% set items   = (groups[teamKey].items|default({})) %}
+    {% set current = attribute(items, probKey) is defined ? attribute(items, probKey) : null %}
+
+    {# 代表選定：
+        1) current が無い → 採用
+        2) 新=正解, 現在=不正解/未定義 → 採用
+        3) どちらも不正解 → 新 passed が current.passed より大きい時のみ採用（同点は据え置き＝先勝ち）
+    #}
+    {% set currentIsCorrect = current is not null and current.isCorrect is defined and current.isCorrect %}
+    {% set currentPassed    = current is not null and current.passed is defined ? current.passed : -1 %}
+
+    {% set replace =
+        (current is null)
+        or (isCorrect and not currentIsCorrect)
+        or ((not isCorrect) and (not currentIsCorrect) and (passed > currentPassed))
+    %}
+
+    {% if replace %}
+        {% set newItem = {
+        'prob'     : probLabel,
+        'seikai'   : seikai,
+        'passed'   : passed,
+        'total'    : total,
+        'isCorrect': isCorrect
+        } %}
+        {% set items  = items|merge({ (probKey): newItem }) %}
+    {% endif %}
+
+    {% set groups = groups|merge({ (teamKey): {'name': teamName, 'items': items} }) %}
+    {% endfor %}
+
+    {# === CSVダウンロードボタン（縦CSV + 横CSV） === #}
+    <div class="text-right my-2">
+        {# <button id="download-digest" class="btn btn-sm btn-outline-primary mr-2">
+            <i class="fas fa-download"></i> ダイジェスト表をCSVで保存（縦）
+        </button> #}
+        <button id="download-digest-wide" class="btn btn-sm btn-outline-success">
+            <i class="fas fa-download"></i> ダイジェスト表をCSVで保存
+        </button>
+    </div>
+
+    <script>
+    (function(){
+        // 既存の「縦」CSV（セル内の複数行は "/" で結合）
+        const btn = document.getElementById('download-digest');
+        if (btn) btn.addEventListener('click', function() {
+            const table = document.getElementById('digest-table');
+            if (!table) return;
+            let csv = '';
+            table.querySelectorAll('tr').forEach(tr => {
+            const cols = tr.querySelectorAll('th, td');
+            const row = [];
+            cols.forEach(td => {
+                const parts = Array.from(td.querySelectorAll('div')).map(d => d.innerText.trim());
+                const text = (parts.length ? parts.join(' / ') : (td.innerText || '')).replace(/\n/g,' ').replace(/"/g,'""');
+                row.push('"' + text + '"');
+            });
+            csv += row.join(',') + '\n';
+            });
+            const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8;' });
+            const url  = URL.createObjectURL(blob);
+            const a    = document.createElement('a');
+            const now  = new Date();
+            const ts   = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+            a.href = url;
+            a.download = 'submissions_digest_' + ts + '.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        // ★新規：横展開CSV（team, problem1, 判定1, 通過1, problem2, 判定2, 通過2, ...）
+        const btnWide = document.getElementById('download-digest-wide');
+        if (!btnWide) return;
+
+        btnWide.addEventListener('click', function () {
+            const table = document.getElementById('digest-table');
+            if (!table) return;
+
+            const rows = Array.from(table.querySelectorAll('tbody > tr'));
+
+            // 1) まず全行を走査して、全問題の集合を shortname キーで作る
+            //    問題セルは "SHORTNAME - 問題名" として表示している前提
+            const problemMap = new Map(); // shortname -> full label
+            const parsed = rows.map(tr => {
+            const tds = tr.querySelectorAll('td');
+            const team = tds[0]?.innerText.trim() || '';
+            const probs  = Array.from(tds[1]?.querySelectorAll('div') || []).map(d => d.innerText.trim());
+            const seikai = Array.from(tds[2]?.querySelectorAll('div') || []).map(d => d.innerText.trim());
+            const tests  = Array.from(tds[3]?.querySelectorAll('div') || []).map(d => d.innerText.trim());
+
+            // 同じ行内で index を対応付けて、shortname -> {label,seikai,tests}
+            const dict = {}; // shortname -> { label, seikai, tests }
+            for (let i = 0; i < Math.max(probs.length, seikai.length, tests.length); i++) {
+                const label = probs[i] || '';
+                const shortname = label.split(' - ')[0] || label; // 前半をキーに
+                const sj = seikai[i] || '';
+                const tj = tests[i] || '';
+                if (!shortname) continue;
+                dict[shortname] = { label, seikai: sj, tests: tj };
+                if (!problemMap.has(shortname)) problemMap.set(shortname, label);
+            }
+            return { team, dict };
+            });
+
+            // 2) 列順を決める：shortname 昇順（例: HERON, PO, …）
+            const orderedShortnames = Array.from(problemMap.keys()).sort((a,b) => a.localeCompare(b, 'ja'));
+            const orderedLabels = orderedShortnames.map(sn => problemMap.get(sn));
+
+            // 3) ヘッダ作成： team, <問題>, <問題 判定>, <問題 通過>, …
+            const header = ['team'];
+            orderedLabels.forEach(label => {
+            header.push(label, `${label} 判定`, `${label} 通過`);
+            });
+
+            // 4) 各行を問題順に並べて出力
+            const rowsCsv = [header];
+            parsed.forEach(r => {
+            const row = [r.team];
+            orderedShortnames.forEach(sn => {
+                const info = r.dict[sn];
+                if (info) {
+                row.push(info.label, info.seikai, info.tests);
+                } else {
+                row.push('', '', ''); // 未提出問題は空欄
+                }
+            });
+            rowsCsv.push(row);
+            });
+
+            // 5) CSV 生成・ダウンロード
+            const csv = rowsCsv.map(cols =>
+            cols.map(x => `"${String(x).replace(/\n/g,' ').replace(/"/g,'""')}"`).join(',')
+            ).join('\n');
+
+            const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8;' });
+            const url  = URL.createObjectURL(blob);
+            const a    = document.createElement('a');
+            const now  = new Date();
+            const ts   = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+            a.href = url;
+            a.download = 'submissions_digest_wide_by_problem_' + ts + '.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+    })();
+    </script>
+
+    <div class="card my-3">
+        <div class="card-header py-2">
+            <strong>提出ダイジェスト</strong>
+            <small class="text-muted ml-2">（team / problem / 正解・不正解 / テスト通過数）</small>
+        </div>
+        <div class="card-body p-0">
+            <table id="digest-table" class="table table-sm table-striped mb-0">
+            <thead class="thead-light">
+                <tr>
+                <th style="width:25%;">team</th>
+                <th style="width:35%;">problem</th>
+                <th style="width:20%;">正解・不正解</th>
+                <th style="width:20%;">テスト通過数</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for key in groups|keys|sort %}
+                {% set g = groups[key] %}
+
+                {# 表示順：正解を先、同じ中では shortname（=probKey）で #}
+                {% set list = [] %}
+                {% for k, v in g.items %}{% set list = list|merge([{ 'k': k, 'v': v }]) %}{% endfor %}
+                {% set list = list|sort((a,b) =>
+                    (a.v.isCorrect == b.v.isCorrect) ? (a.k <=> b.k) : (a.v.isCorrect ? -1 : 1)
+                ) %}
+
+                <tr>
+                    <td>{{ g.name }}</td>
+                    <td>{% for it in list %}<div>{{ it.v.prob }}</div>{% endfor %}</td>
+                    <td>{% for it in list %}<div>{{ it.v.seikai }}</div>{% endfor %}</td>
+                    <td>{% for it in list %}<div>{{ it.v.passed }}/{{ it.v.total }}</div>{% endfor %}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" class="text-muted">No submissions</td></tr>
+                {% endfor %}
+            </tbody>
+            </table>
+        </div>
+    </div>
+
+
     <table class="data-table table table-hover table{% if showExternalResult and showExternalTestcases %}-3{% endif %}-striped table-sm submissions-table">
         <thead class="thead-light">
         <tr>

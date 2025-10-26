@@ -94,12 +94,12 @@
                                                 </a>
                                             {% endif %}
 
-                                            {% if numsamples > 0 %}
+                                            {# {% if numsamples > 0 %}
                                                 <a class="btn btn-secondary" role="button"
                                                    href="{{ path(problem_sample_zip_path, {'probId': problem.probid}) }}">
                                                     <i class="fas fa-file-archive"></i> samples
                                                 </a>
-                                            {% endif %}
+                                            {% endif %} #}
 
                                             {% if show_submit_button | default(false) %}
                                                 {% if is_granted('ROLE_JURY') or (current_team_contest is not null and current_team_contest.freezeData.started) %}
