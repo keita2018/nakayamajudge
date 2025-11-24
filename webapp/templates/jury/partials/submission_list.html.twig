@@ -44,70 +44,100 @@
     {% set groups = {} %}
 
     {% for submission in submissions %}
-    {% set teamName  = submission.team.effectiveName %}
-    {% set teamKey   = teamName ~ '' %}  {# 文字列キー固定 #}
+        {# チーム識別 #}
+        {% set teamName = submission.team.effectiveName %}
+        {% set teamKey  = teamName ~ '' %}  {# 文字列キー固定 #}
 
-    {# 問題キーは shortname を使って厳密に1つへ集約 #}
-    {% set probKey   = submission.contestProblem.shortname ~ '' %}
-    {% set probLabel = submission.contestProblem.shortname ~ ' - ' ~ submission.problem.name %}
+        {# すでに集約済みなら取り出し、なければ初期値 #}
+        {% set prev  = groups[teamKey]|default({'name': teamName, 'items': {}, 'userId': ''}) %}
+        {% set items = prev.items|default({}) %}
 
-    {# 判定→正解/不正解 #}
-    {% set result_text = (submission | printValidJurySubmissionResult(false))|lower %}
-    {% set isCorrect   = (result_text == 'correct') %}
-    {% set seikai      = isCorrect ? '正解' : '不正解' %}
+        {# --- 学籍番号の取得 --- #}
+        {% set userId = prev.userId|default('') %}
+        {% if userId == '' %}
 
-    {# 通過数/総数 #}
-    {% set j = submission.judgings.first is defined ? submission.judgings.first : null %}
-    {% set runs = [] %}
-    {% if j %}
-        {% if attribute(j, 'judgingRuns') is defined and j.judgingRuns is not empty %}
-            {% set runs = j.judgingRuns %}
-        {% elseif attribute(j, 'runs') is defined and j.runs is not empty %}
-            {% set runs = j.runs %}
+            {# 1. team.users の username（学籍番号）を最優先で取得 #}
+            {% if attribute(submission.team,'users') is defined and submission.team.users is not empty %}
+                {% set u = submission.team.users|first %}
+                {% if u is not null and attribute(u,'username') is defined and u.username %}
+                    {% set userId = u.username %}
+                {% endif %}
+            {% endif %}
+
+            {# 2. username がない場合のみ externalid を fallback として使用 #}
+            {% if userId == '' and attribute(submission.team,'externalid') is defined and submission.team.externalid %}
+                {% set userId = submission.team.externalid %}
+            {% endif %}
+
         {% endif %}
-    {% endif %}
 
-    {% set passed = 0 %}
-    {% set total  = 0 %}
-    {% for r in runs %}
-        {% set rr = (attribute(r, 'runresult') is defined and r.runresult is not empty) ? r.runresult|lower : '' %}
-        {% set total = total + 1 %}
-        {% if rr == 'correct' or rr == 'accepted' %}
-            {% set passed = passed + 1 %}
+        {# 問題キーは shortname を使って厳密に1つへ集約 #}
+        {% set probKey   = submission.contestProblem.shortname ~ '' %}
+        {% set probLabel = submission.contestProblem.shortname ~ ' - ' ~ submission.problem.name %}
+
+        {# 判定→正解/不正解 #}
+        {% set result_text = (submission | printValidJurySubmissionResult(false))|lower %}
+        {% set isCorrect   = (result_text == 'correct') %}
+        {% set seikai      = isCorrect ? '正解' : '不正解' %}
+
+        {# 通過数/総数 #}
+        {% set j    = submission.judgings.first is defined ? submission.judgings.first : null %}
+        {% set runs = [] %}
+        {% if j %}
+            {% if attribute(j, 'judgingRuns') is defined and j.judgingRuns is not empty %}
+                {% set runs = j.judgingRuns %}
+            {% elseif attribute(j, 'runs') is defined and j.runs is not empty %}
+                {% set runs = j.runs %}
+            {% endif %}
         {% endif %}
-    {% endfor %}
 
-    {# 既存の items（辞書）を取得 #}
-    {% set items   = (groups[teamKey].items|default({})) %}
-    {% set current = attribute(items, probKey) is defined ? attribute(items, probKey) : null %}
+        {% set passed = 0 %}
+        {% set total  = 0 %}
+        {% for r in runs %}
+            {% set rr = (attribute(r, 'runresult') is defined and r.runresult is not empty) ? r.runresult|lower : '' %}
+            {% set total = total + 1 %}
+            {% if rr == 'correct' or rr == 'accepted' %}
+                {% set passed = passed + 1 %}
+            {% endif %}
+        {% endfor %}
 
-    {# 代表選定：
+        {# 既存の代表（このチーム・この問題） #}
+        {% set current = attribute(items, probKey) is defined ? attribute(items, probKey) : null %}
+        {% set currentIsCorrect = current is not null and current.isCorrect is defined and current.isCorrect %}
+        {% set currentPassed    = current is not null and current.passed   is defined ? current.passed : -1 %}
+
+        {# 代表選定：
         1) current が無い → 採用
         2) 新=正解, 現在=不正解/未定義 → 採用
-        3) どちらも不正解 → 新 passed が current.passed より大きい時のみ採用（同点は据え置き＝先勝ち）
-    #}
-    {% set currentIsCorrect = current is not null and current.isCorrect is defined and current.isCorrect %}
-    {% set currentPassed    = current is not null and current.passed is defined ? current.passed : -1 %}
+        3) どちらも不正解 → 新 passed > current.passed のとき採用
+        #}
+        {% set replace =
+            (current is null)
+            or (isCorrect and not currentIsCorrect)
+            or ((not isCorrect) and (not currentIsCorrect) and (passed > currentPassed))
+        %}
 
-    {% set replace =
-        (current is null)
-        or (isCorrect and not currentIsCorrect)
-        or ((not isCorrect) and (not currentIsCorrect) and (passed > currentPassed))
-    %}
+        {% if replace %}
+            {% set newItem = {
+                'prob'     : probLabel,
+                'seikai'   : seikai,
+                'passed'   : passed,
+                'total'    : total,
+                'isCorrect': isCorrect
+            } %}
+            {% set items = items|merge({ (probKey): newItem }) %}
+        {% endif %}
 
-    {% if replace %}
-        {% set newItem = {
-        'prob'     : probLabel,
-        'seikai'   : seikai,
-        'passed'   : passed,
-        'total'    : total,
-        'isCorrect': isCorrect
-        } %}
-        {% set items  = items|merge({ (probKey): newItem }) %}
-    {% endif %}
-
-    {% set groups = groups|merge({ (teamKey): {'name': teamName, 'items': items} }) %}
+        {# チームの集約結果を書き戻し（userId を必ず保持） #}
+        {% set groups = groups|merge({
+            (teamKey): {
+                'name'  : teamName,
+                'items' : items,
+                'userId': userId
+            }
+        }) %}
     {% endfor %}
+
 
     {# === CSVダウンロードボタン（縦CSV + 横CSV） === #}
     <div class="text-right my-2">
@@ -158,56 +188,90 @@
 
             const rows = Array.from(table.querySelectorAll('tbody > tr'));
 
-            // 1) まず全行を走査して、全問題の集合を shortname キーで作る
-            //    問題セルは "SHORTNAME - 問題名" として表示している前提
-            const problemMap = new Map(); // shortname -> full label
+            // 1) 全問題（shortname）と「問題ラベル」「総テストケース数」を収集
+            const problemMap    = new Map(); // shortname -> full label
+            const problemTotals = new Map(); // shortname -> total testcase count（文字列）
+
             const parsed = rows.map(tr => {
             const tds = tr.querySelectorAll('td');
-            const team = tds[0]?.innerText.trim() || '';
+            const userId = tr.dataset.userId ? tr.dataset.userId.trim() : '';
+            const name   = tds[0]?.innerText.trim() || '';
+
             const probs  = Array.from(tds[1]?.querySelectorAll('div') || []).map(d => d.innerText.trim());
             const seikai = Array.from(tds[2]?.querySelectorAll('div') || []).map(d => d.innerText.trim());
             const tests  = Array.from(tds[3]?.querySelectorAll('div') || []).map(d => d.innerText.trim());
 
-            // 同じ行内で index を対応付けて、shortname -> {label,seikai,tests}
-            const dict = {}; // shortname -> { label, seikai, tests }
-            for (let i = 0; i < Math.max(probs.length, seikai.length, tests.length); i++) {
+            const dict = {};   // shortname -> { judge, pass, total }
+            let correctCount = 0;
+
+            const len = Math.max(probs.length, seikai.length, tests.length);
+            for (let i = 0; i < len; i++) {
                 const label = probs[i] || '';
-                const shortname = label.split(' - ')[0] || label; // 前半をキーに
-                const sj = seikai[i] || '';
-                const tj = tests[i] || '';
+                const shortname = (label.split(' - ')[0] || label).trim();
                 if (!shortname) continue;
-                dict[shortname] = { label, seikai: sj, tests: tj };
-                if (!problemMap.has(shortname)) problemMap.set(shortname, label);
+
+                const sj = (seikai[i] || '').trim();
+                const judgeBin = (sj === '正解') ? '1' : '0';
+                if (judgeBin === '1') correctCount++;
+
+                // "10/10" などから通過数・総数を抽出
+                const testStr = (tests[i] || '').trim();
+                let pass = '0';
+                let total = '0';
+                if (testStr.includes('/')) {
+                const [p, t] = testStr.split('/');
+                pass  = (p || '').trim() || '0';
+                total = (t || '').trim() || '0';
+                }
+
+                dict[shortname] = { shortname, label, judge: judgeBin, pass, total };
+
+                // 問題ラベルと総テストケース数をグローバルに保存（最初に見つかった値を採用）
+                if (!problemMap.has(shortname)) {
+                problemMap.set(shortname, label);
+                }
+                if (total !== '0' && !problemTotals.has(shortname)) {
+                problemTotals.set(shortname, total);
+                }
             }
-            return { team, dict };
+
+            return { userId, name, dict, correctCount };
             });
 
-            // 2) 列順を決める：shortname 昇順（例: HERON, PO, …）
-            const orderedShortnames = Array.from(problemMap.keys()).sort((a,b) => a.localeCompare(b, 'ja'));
-            const orderedLabels = orderedShortnames.map(sn => problemMap.get(sn));
+            // 2) 問題列の順番（shortname 昇順）
+            const orderedShortnames = Array.from(problemMap.keys()).sort((a, b) =>
+            a.localeCompare(b, 'ja', { numeric: true })
+            );
 
-            // 3) ヘッダ作成： team, <問題>, <問題 判定>, <問題 通過>, …
-            const header = ['team'];
-            orderedLabels.forEach(label => {
-            header.push(label, `${label} 判定`, `${label} 通過`);
+            // 3) ヘッダ
+            const header = ['学籍番号', 'ローマ字氏名', '合計正解数'];
+            orderedShortnames.forEach(sn => {
+            header.push(
+                `${sn} 正誤判定`,
+                `${sn} 通過ケース数`,
+                `${sn} テストケース数`
+            );
             });
 
-            // 4) 各行を問題順に並べて出力
+            // 4) データ行
             const rowsCsv = [header];
             parsed.forEach(r => {
-            const row = [r.team];
+            const row = [r.userId, r.name, String(r.correctCount)];
             orderedShortnames.forEach(sn => {
-                const info = r.dict[sn];
-                if (info) {
-                row.push(info.label, info.seikai, info.tests);
-                } else {
-                row.push('', '', ''); // 未提出問題は空欄
-                }
+                const info = r.dict[sn] || null;
+                const globalTotal = problemTotals.get(sn) || '0';
+
+                // 未提出なら：判定=0, 通過=0, 総数=globalTotal
+                const judge = info ? info.judge : '0';
+                const pass  = info ? info.pass  : '0';
+                const total = globalTotal;  // 提出の有無に関わらず、問題ごとの総テストケース数
+
+                row.push(judge, pass, total);
             });
             rowsCsv.push(row);
             });
 
-            // 5) CSV 生成・ダウンロード
+            // 5) CSV生成・ダウンロード
             const csv = rowsCsv.map(cols =>
             cols.map(x => `"${String(x).replace(/\n/g,' ').replace(/"/g,'""')}"`).join(',')
             ).join('\n');
@@ -218,7 +282,7 @@
             const now  = new Date();
             const ts   = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
             a.href = url;
-            a.download = 'submissions_digest_wide_by_problem_' + ts + '.csv';
+            a.download = 'submissions_digest_by_problem_student_' + ts + '.csv';
             a.click();
             URL.revokeObjectURL(url);
         });
@@ -251,7 +315,7 @@
                     (a.v.isCorrect == b.v.isCorrect) ? (a.k <=> b.k) : (a.v.isCorrect ? -1 : 1)
                 ) %}
 
-                <tr>
+                <tr  data-user-id="{{ g.userId|default('') }}">
                     <td>{{ g.name }}</td>
                     <td>{% for it in list %}<div>{{ it.v.prob }}</div>{% endfor %}</td>
                     <td>{% for it in list %}<div>{{ it.v.seikai }}</div>{% endfor %}</td>
