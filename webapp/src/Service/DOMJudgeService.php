@@ -147,7 +147,18 @@ class DOMJudgeService
             $qb->andWhere('c.activatetime <= :now');
         }
 
-        return $qb->getQuery()->getResult();
+        $contests = $qb->getQuery()->getResult();
+        if ($onlyofteam !== null && $onlyofteam > 0) {
+            $leftIds = $this->getLeftContestIdsForTeam($onlyofteam);
+            if (!empty($leftIds)) {
+                $contests = array_filter(
+                    $contests,
+                    static fn(Contest $contest) => !in_array($contest->getCid(), $leftIds, true)
+                );
+            }
+        }
+
+        return $contests;
     }
 
     public function getCurrentContestCookie(): ?int
@@ -183,6 +194,48 @@ class DOMJudgeService
             return reset($contests);
         }
         return null;
+    }
+
+    public function hasTeamLeftContest(int $teamId, Contest $contest): bool
+    {
+        $conn = $this->em->getConnection();
+        $row = $conn->fetchOne(
+            'SELECT 1 FROM contestteamleft WHERE cid = :cid AND teamid = :teamid LIMIT 1',
+            ['cid' => $contest->getCid(), 'teamid' => $teamId]
+        );
+        return $row !== false;
+    }
+
+    /**
+     * @return Contest[]
+     */
+    public function getLeftActiveContestsForTeam(int $teamId): array
+    {
+        $now = Utils::now();
+        $conn = $this->em->getConnection();
+        $ids = $conn->fetchFirstColumn(
+            'SELECT c.cid
+               FROM contest c
+               JOIN contestteamleft ctl ON ctl.cid = c.cid
+              WHERE ctl.teamid = :teamid
+                AND c.enabled = 1
+                AND (c.deactivatetime IS NULL OR c.deactivatetime > :now)
+                AND c.activatetime <= :now',
+            ['teamid' => $teamId, 'now' => $now]
+        );
+        if (empty($ids)) {
+            return [];
+        }
+        return $this->em->getRepository(Contest::class)->findBy(['cid' => $ids]);
+    }
+
+    private function getLeftContestIdsForTeam(int $teamId): array
+    {
+        $conn = $this->em->getConnection();
+        return $conn->fetchFirstColumn(
+            'SELECT cid FROM contestteamleft WHERE teamid = :teamid',
+            ['teamid' => $teamId]
+        );
     }
 
     public function getContest(int $cid): ?Contest
@@ -1417,11 +1470,14 @@ class DOMJudgeService
                 ->andWhere('c.cid = :cid OR cc.cid = :cid')
                 ->setParameter('cid', $contest->getCid());
         }
-
         /** @var Team $team */
         $team = $queryBuilder->getQuery()->getOneOrNullResult();
 
         if (!$team) {
+            throw new BadRequestHttpException(
+                sprintf("Team with ID '%s' not found in contest or not enabled.", $teamId));
+        }
+        if ($this->hasTeamLeftContest((int)$team->getTeamid(), $contest)) {
             throw new BadRequestHttpException(
                 sprintf("Team with ID '%s' not found in contest or not enabled.", $teamId));
         }

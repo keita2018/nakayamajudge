@@ -68,6 +68,9 @@ class MiscController extends BaseController
         $team    = $user->getTeam();
         $teamId  = $team->getTeamid();
         $contest = $this->dj->getCurrentContest($teamId);
+        if ($contest === null && count($this->dj->getLeftActiveContestsForTeam($teamId)) > 0) {
+            $this->addFlash('danger', 'このコンテストは退出済みのため再参加できません。');
+        }
 
         $data = [
             'team' => $team,
@@ -152,6 +155,16 @@ class MiscController extends BaseController
      */
     public function changeContestAction(Request $request, RouterInterface $router, int $contestId): Response
     {
+        if ($contestId > 0) {
+            $contest = $this->dj->getContest($contestId);
+            $user    = $this->dj->getUser();
+            $team    = $user->getTeam();
+            if ($contest !== null && $team !== null &&
+                $this->dj->hasTeamLeftContest($team->getTeamid(), $contest)) {
+                $this->addFlash('danger', 'このコンテストは退出済みのため再参加できません。');
+                return $this->redirectToRoute('team_index');
+            }
+        }
         if ($this->isLocalReferer($router, $request)) {
             $response = new RedirectResponse($request->headers->get('referer'));
         } else {

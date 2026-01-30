@@ -9,6 +9,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\Security\Core\Event\AuthenticationSuccessEvent;
+use Symfony\Component\Security\Http\Event\LogoutEvent;
 
 class UserStateUpdater implements EventSubscriberInterface
 {
@@ -25,7 +26,10 @@ class UserStateUpdater implements EventSubscriberInterface
 
     public static function getSubscribedEvents(): array
     {
-        return [AuthenticationSuccessEvent::class => 'updateUserState'];
+        return [
+            AuthenticationSuccessEvent::class => 'updateUserState',
+            LogoutEvent::class => 'onLogout',
+        ];
     }
 
     public function updateUserState(AuthenticationSuccessEvent $event): void
@@ -55,5 +59,31 @@ class UserStateUpdater implements EventSubscriberInterface
                 $this->dj->auditlog('user', $user->getUserid(), 'logged on on ' . $ip, null, $user->getUserName());
             }
         }
+    }
+
+    public function onLogout(LogoutEvent $event): void
+    {
+        $token = $event->getToken();
+        if ($token === null) {
+            return;
+        }
+        $user = $token->getUser();
+        if (!$user instanceof User || $user->getTeam() === null) {
+            return;
+        }
+        $team = $user->getTeam();
+        $contest = $this->dj->getCurrentContest($team->getTeamid());
+        if ($contest === null) {
+            return;
+        }
+        $conn = $this->em->getConnection();
+        $conn->executeStatement(
+            'INSERT IGNORE INTO contestteamleft (cid, teamid, lefttime) VALUES (:cid, :teamid, :lefttime)',
+            [
+                'cid' => $contest->getCid(),
+                'teamid' => $team->getTeamid(),
+                'lefttime' => Utils::now(),
+            ]
+        );
     }
 }
